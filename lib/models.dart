@@ -4,43 +4,85 @@
 // ─────────────────────────────────────────────────────────────────
 
 class AppUser {
+  /// Login handle. Admin uses a real username ("mantoman"); community members
+  /// are registered with their email as the username.
   final String username;
-  final String displayName;
+  final String firstName;
+  final String lastName;
+  final String email;
+  final String phone;
+  final DateTime? dob;
   final String password;
   final bool isAdmin;
-  final String favouriteTeam;
+  final String clubTeam; // supported club
+  final String nationalTeam; // supported national team
 
   const AppUser({
     required this.username,
-    required this.displayName,
+    this.firstName = '',
+    this.lastName = '',
+    this.email = '',
+    this.phone = '',
+    this.dob,
     required this.password,
     this.isAdmin = false,
-    this.favouriteTeam = '',
+    this.clubTeam = '',
+    this.nationalTeam = '',
   });
 
-  AppUser copyWith({String? displayName, String? password, String? favouriteTeam}) =>
+  /// Friendly name derived from first + last, falling back to the username.
+  String get displayName {
+    final n = '$firstName $lastName'.trim();
+    return n.isEmpty ? username : n;
+  }
+
+  AppUser copyWith({
+    String? firstName,
+    String? lastName,
+    String? email,
+    String? phone,
+    DateTime? dob,
+    String? password,
+    String? clubTeam,
+    String? nationalTeam,
+  }) =>
       AppUser(
         username: username,
-        displayName: displayName ?? this.displayName,
+        firstName: firstName ?? this.firstName,
+        lastName: lastName ?? this.lastName,
+        email: email ?? this.email,
+        phone: phone ?? this.phone,
+        dob: dob ?? this.dob,
         password: password ?? this.password,
         isAdmin: isAdmin,
-        favouriteTeam: favouriteTeam ?? this.favouriteTeam,
+        clubTeam: clubTeam ?? this.clubTeam,
+        nationalTeam: nationalTeam ?? this.nationalTeam,
       );
 
   Map<String, dynamic> toJson() => {
         'username': username,
-        'displayName': displayName,
+        'firstName': firstName,
+        'lastName': lastName,
+        'email': email,
+        'phone': phone,
+        'dob': dob?.toIso8601String(),
         'password': password,
         'isAdmin': isAdmin,
-        'favouriteTeam': favouriteTeam,
+        'clubTeam': clubTeam,
+        'nationalTeam': nationalTeam,
       };
 
   factory AppUser.fromJson(Map<String, dynamic> j) => AppUser(
         username: j['username'] as String,
-        displayName: j['displayName'] as String,
+        firstName: j['firstName'] as String? ?? '',
+        lastName: j['lastName'] as String? ?? '',
+        email: j['email'] as String? ?? '',
+        phone: j['phone'] as String? ?? '',
+        dob: (j['dob'] as String?) != null ? DateTime.tryParse(j['dob'] as String) : null,
         password: j['password'] as String,
         isAdmin: j['isAdmin'] as bool? ?? false,
-        favouriteTeam: j['favouriteTeam'] as String? ?? '',
+        clubTeam: j['clubTeam'] as String? ?? '',
+        nationalTeam: j['nationalTeam'] as String? ?? '',
       );
 }
 

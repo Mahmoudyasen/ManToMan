@@ -1,10 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
+import '../data/teams.dart';
 import '../store.dart';
 import '../theme.dart';
+import '../widgets.dart';
 
 /// Login / sign-up gate shown before the app shell. Matches the violet
 /// gradient identity of the home design.
+///
+/// Login is unified — the same form for everyone; admin rights come from the
+/// account's stored flag (no separate admin login). Sign-up always creates a
+/// community member (you can't register as an admin) and collects name, email,
+/// phone, date of birth, and the club + national team you support.
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
 
@@ -15,32 +23,59 @@ class AuthScreen extends StatefulWidget {
 class _AuthScreenState extends State<AuthScreen> {
   bool _signup = false;
   bool _obscure = true;
+  bool _busy = false;
   String? _error;
 
-  final _username = TextEditingController();
-  final _displayName = TextEditingController();
+  // Login
+  final _identifier = TextEditingController();
+
+  // Sign-up
+  final _firstName = TextEditingController();
+  final _lastName = TextEditingController();
+  final _email = TextEditingController();
+  final _phone = TextEditingController();
+  DateTime? _dob;
+  String? _club;
+  String? _national;
+
   final _password = TextEditingController();
 
   @override
   void dispose() {
-    _username.dispose();
-    _displayName.dispose();
+    _identifier.dispose();
+    _firstName.dispose();
+    _lastName.dispose();
+    _email.dispose();
+    _phone.dispose();
     _password.dispose();
     super.dispose();
   }
 
-  void _submit() {
-    setState(() => _error = null);
-    if (_signup) {
-      final err = store.signUp(
-          _username.text, _displayName.text, _password.text);
-      if (err != null) setState(() => _error = err);
-    } else {
-      final user = store.login(_username.text, _password.text);
-      if (user == null) {
-        setState(() => _error = 'Wrong username or password.');
-      }
-    }
+  Future<void> _submit() async {
+    if (_busy) return;
+    setState(() {
+      _error = null;
+      _busy = true;
+    });
+    final err = _signup
+        ? await store.signUp(
+            firstName: _firstName.text,
+            lastName: _lastName.text,
+            email: _email.text,
+            phone: _phone.text,
+            dob: _dob,
+            clubTeam: _club ?? '',
+            nationalTeam: _national ?? '',
+            password: _password.text,
+          )
+        : await store.login(_identifier.text, _password.text);
+    // On success the store flips currentUser and this screen is replaced, so
+    // only touch state if we're still mounted and stayed on this screen.
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _error = err;
+    });
   }
 
   @override
@@ -59,7 +94,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   const SizedBox(height: 26),
                   _card(),
                   const SizedBox(height: 22),
-                  _demoHint(),
+                  if (!_signup) _demoHint(),
                 ],
               ),
             ),
@@ -124,63 +159,12 @@ class _AuthScreenState extends State<AuthScreen> {
         children: [
           _toggle(),
           const SizedBox(height: 22),
-          AppField(
-            controller: _username,
-            hint: 'Username',
-            icon: Icons.alternate_email_rounded,
-            action: TextInputAction.next,
-          ),
-          if (_signup) ...[
-            const SizedBox(height: 14),
-            AppField(
-              controller: _displayName,
-              hint: 'Display name',
-              icon: Icons.badge_outlined,
-              action: TextInputAction.next,
-            ),
-          ],
-          const SizedBox(height: 14),
-          TextField(
-            controller: _password,
-            obscureText: _obscure,
-            onSubmitted: (_) => _submit(),
-            style: const TextStyle(
-                color: C.ink, fontSize: 15, fontWeight: FontWeight.w600),
-            decoration: InputDecoration(
-              hintText: 'Password',
-              hintStyle:
-                  const TextStyle(color: C.muted, fontWeight: FontWeight.w500),
-              prefixIcon: const Icon(Icons.lock_outline_rounded,
-                  color: C.violetMid, size: 21),
-              suffixIcon: IconButton(
-                icon: Icon(
-                    _obscure
-                        ? Icons.visibility_off_outlined
-                        : Icons.visibility_outlined,
-                    color: C.muted,
-                    size: 20),
-                onPressed: () => setState(() => _obscure = !_obscure),
-              ),
-              filled: true,
-              fillColor: C.field,
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
-                borderSide: BorderSide.none,
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
-                borderSide: const BorderSide(color: C.violetMid, width: 1.5),
-              ),
-            ),
-          ),
+          if (_signup) ..._signupFields() else ..._loginFields(),
           if (_error != null) ...[
             const SizedBox(height: 14),
             Row(
               children: [
-                const Icon(Icons.error_outline_rounded,
-                    color: C.live, size: 18),
+                const Icon(Icons.error_outline_rounded, color: C.live, size: 18),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(_error!,
@@ -194,14 +178,185 @@ class _AuthScreenState extends State<AuthScreen> {
           ],
           const SizedBox(height: 22),
           PillButton(
-            label: _signup ? 'Create account' : 'Log in',
-            icon: _signup
-                ? Icons.person_add_alt_1_rounded
-                : Icons.login_rounded,
-            onTap: _submit,
+            label: _busy
+                ? 'Please wait…'
+                : (_signup ? 'Create account' : 'Log in'),
+            icon: _busy
+                ? null
+                : (_signup
+                    ? Icons.person_add_alt_1_rounded
+                    : Icons.login_rounded),
+            onTap: _busy ? null : _submit,
           ),
         ],
       ),
+    );
+  }
+
+  List<Widget> _loginFields() => [
+        AppField(
+          controller: _identifier,
+          hint: 'Email or username',
+          icon: Icons.alternate_email_rounded,
+          action: TextInputAction.next,
+        ),
+        const SizedBox(height: 14),
+        _passwordField(),
+      ];
+
+  List<Widget> _signupFields() => [
+        Row(
+          children: [
+            Expanded(
+              child: AppField(
+                controller: _firstName,
+                hint: 'First name',
+                icon: Icons.person_outline_rounded,
+                action: TextInputAction.next,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: AppField(
+                controller: _lastName,
+                hint: 'Last name',
+                icon: Icons.badge_outlined,
+                action: TextInputAction.next,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        AppField(
+          controller: _email,
+          hint: 'Email',
+          icon: Icons.mail_outline_rounded,
+          action: TextInputAction.next,
+        ),
+        const SizedBox(height: 14),
+        AppField(
+          controller: _phone,
+          hint: 'Phone number',
+          icon: Icons.phone_outlined,
+          action: TextInputAction.next,
+        ),
+        const SizedBox(height: 14),
+        _dobField(),
+        const SizedBox(height: 14),
+        _clubField(),
+        const SizedBox(height: 14),
+        _nationalField(),
+        const SizedBox(height: 14),
+        _passwordField(),
+      ];
+
+  Widget _passwordField() {
+    return TextField(
+      controller: _password,
+      obscureText: _obscure,
+      onSubmitted: (_) => _submit(),
+      style:
+          const TextStyle(color: C.ink, fontSize: 15, fontWeight: FontWeight.w600),
+      decoration: InputDecoration(
+        hintText: 'Password',
+        hintStyle:
+            const TextStyle(color: C.muted, fontWeight: FontWeight.w500),
+        prefixIcon:
+            const Icon(Icons.lock_outline_rounded, color: C.violetMid, size: 21),
+        suffixIcon: IconButton(
+          icon: Icon(
+              _obscure
+                  ? Icons.visibility_off_outlined
+                  : Icons.visibility_outlined,
+              color: C.muted,
+              size: 20),
+          onPressed: () => setState(() => _obscure = !_obscure),
+        ),
+        filled: true,
+        fillColor: C.field,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: const BorderSide(color: C.violetMid, width: 1.5),
+        ),
+      ),
+    );
+  }
+
+  Widget _dobField() {
+    final label = _dob == null
+        ? 'Date of birth'
+        : DateFormat('d MMMM yyyy').format(_dob!);
+    return _SelectorTile(
+      icon: Icons.cake_outlined,
+      selected: _dob != null,
+      child: Text(label,
+          style: TextStyle(
+              color: _dob == null ? C.muted : C.ink,
+              fontSize: 15,
+              fontWeight: FontWeight.w600)),
+      onTap: () async {
+        FocusScope.of(context).unfocus();
+        final now = DateTime.now();
+        final picked = await showDatePicker(
+          context: context,
+          initialDate: _dob ?? DateTime(now.year - 18, now.month, now.day),
+          firstDate: DateTime(1920),
+          lastDate: now,
+          helpText: 'Select your date of birth',
+        );
+        if (picked != null) setState(() => _dob = picked);
+      },
+    );
+  }
+
+  Widget _clubField() {
+    final club = _club == null
+        ? null
+        : kClubs.firstWhere((c) => c.name == _club,
+            orElse: () => Club(_club!, null));
+    return _SelectorTile(
+      icon: Icons.shield_outlined,
+      selected: _club != null,
+      leading: club == null
+          ? null
+          : ClubCrest(name: club.name, logoUrl: club.logoUrl, size: 28),
+      child: Text(_club ?? 'Club you support',
+          style: TextStyle(
+              color: _club == null ? C.muted : C.ink,
+              fontSize: 15,
+              fontWeight: FontWeight.w600)),
+      onTap: () async {
+        FocusScope.of(context).unfocus();
+        final picked = await pickClub(context, _club);
+        if (picked != null) setState(() => _club = picked);
+      },
+    );
+  }
+
+  Widget _nationalField() {
+    final nat = _national == null
+        ? null
+        : kNationalTeams.where((n) => n.name == _national).firstOrNull;
+    return _SelectorTile(
+      icon: Icons.public_rounded,
+      selected: _national != null,
+      leading: nat == null ? null : CountryFlag(flagUrl: nat.flagUrl, size: 30),
+      child: Text(_national ?? 'National team you support',
+          style: TextStyle(
+              color: _national == null ? C.muted : C.ink,
+              fontSize: 15,
+              fontWeight: FontWeight.w600)),
+      onTap: () async {
+        FocusScope.of(context).unfocus();
+        final picked = await pickNational(context, _national);
+        if (picked != null) setState(() => _national = picked);
+      },
     );
   }
 
@@ -293,6 +448,57 @@ class _AuthScreenState extends State<AuthScreen> {
                 fontSize: 12.5,
                 fontWeight: FontWeight.w700)),
       ],
+    );
+  }
+}
+
+/// A tappable field that looks like [AppField] but shows a selected value
+/// (date / club / national team) with an optional leading logo or flag.
+class _SelectorTile extends StatelessWidget {
+  final IconData icon;
+  final Widget child;
+  final Widget? leading;
+  final bool selected;
+  final VoidCallback onTap;
+  const _SelectorTile({
+    required this.icon,
+    required this.child,
+    required this.onTap,
+    this.leading,
+    this.selected = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: C.field,
+          borderRadius: BorderRadius.circular(16),
+          border: selected
+              ? Border.all(color: C.violetMid.withValues(alpha: 0.4), width: 1.4)
+              : null,
+        ),
+        child: Row(
+          children: [
+            if (leading != null)
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: leading,
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: Icon(icon, color: C.violetMid, size: 21),
+              ),
+            Expanded(child: child),
+            const Icon(Icons.expand_more_rounded, color: C.muted, size: 22),
+          ],
+        ),
+      ),
     );
   }
 }

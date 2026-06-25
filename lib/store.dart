@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'models.dart';
+import 'services/auth_api.dart';
 
 /// Central app state + persistence. A single instance ([store]) is shared
 /// through the widget tree via [ListenableBuilder]. Everything lives in
@@ -81,18 +82,22 @@ class AppStore extends ChangeNotifier {
   void _seedIfNeeded() {
     if (users.isEmpty) {
       users.addAll(const [
+        // The host. There is no admin sign-up — this seeded account (and the
+        // matching row in db/schema.sql) is the only way in as an admin.
         AppUser(
           username: 'mantoman',
-          displayName: 'Man to Man',
+          firstName: 'Man to Man',
+          email: 'admin@mantoman.app',
           password: '123',
           isAdmin: true,
-          favouriteTeam: 'The Studio',
         ),
         AppUser(
           username: 'mahmoud',
-          displayName: 'Mahmoud',
+          firstName: 'Mahmoud',
+          email: 'mahmoud@example.com',
           password: '123',
-          favouriteTeam: 'Liverpool',
+          clubTeam: 'Liverpool',
+          nationalTeam: 'Egypt',
         ),
       ]);
       _persist(_kUsers, users);
@@ -119,39 +124,118 @@ class AppStore extends ChangeNotifier {
   String _id() => DateTime.now().microsecondsSinceEpoch.toString();
 
   // ── Auth ─────────────────────────────────────────────────────
-  AppUser? login(String username, String password) {
-    final u = users
+  /// Unified login against the backend API (see `backend/app.py`).
+  /// [identifier] matches either the username (e.g. the admin's "mantoman") or
+  /// a member's email; admin rights come from the stored `is_admin` flag — there
+  /// is no separate admin login. Returns null on success or an error message.
+  ///
+  /// If the backend is unreachable, falls back to locally-cached accounts (the
+  /// seeded demo accounts and anyone who registered on this device) so the app
+  /// still works offline.
+  Future<String?> login(String identifier, String password) async {
+    final res = await AuthApi.instance.login(identifier, password);
+    if (res.user != null) {
+      _startSession(res.user!);
+      return null;
+    }
+    if (res.reachable) {
+      return res.error ?? 'Wrong email/username or password.';
+    }
+    // Offline fallback.
+    final id = identifier.trim().toLowerCase();
+    final local = users
         .where((u) =>
-            u.username.toLowerCase() == username.trim().toLowerCase() &&
+            (u.username.toLowerCase() == id || u.email.toLowerCase() == id) &&
             u.password == password)
         .firstOrNull;
-    if (u != null) {
-      currentUser = u;
-      _prefs.setString(_kSession, u.username);
-      notifyListeners();
+    if (local != null) {
+      _startSession(local);
+      return null;
     }
-    return u;
+    return 'Wrong email/username or password.';
   }
 
-  /// Returns null on success, or an error message.
-  String? signUp(String username, String displayName, String password) {
-    final uname = username.trim();
-    if (uname.isEmpty || password.isEmpty) return 'Username and password are required.';
-    if (users.any((u) => u.username.toLowerCase() == uname.toLowerCase())) {
-      return 'That username is already taken.';
+  /// Registers a community member via the backend. Never creates an admin.
+  /// Returns null on success, or a human-readable error message.
+  Future<String?> signUp({
+    required String firstName,
+    required String lastName,
+    required String email,
+    required String phone,
+    required DateTime? dob,
+    required String clubTeam,
+    required String nationalTeam,
+    required String password,
+  }) async {
+    final mail = email.trim();
+    // Validate up front so we fail fast with a friendly message (the backend
+    // re-validates too).
+    if (firstName.trim().isEmpty || lastName.trim().isEmpty) {
+      return 'Please enter your first and last name.';
     }
-    final user = AppUser(
-      username: uname,
-      displayName: displayName.trim().isEmpty ? uname : displayName.trim(),
+    if (!_looksLikeEmail(mail)) return 'Please enter a valid email address.';
+    if (phone.trim().isEmpty) return 'Please enter your phone number.';
+    if (dob == null) return 'Please pick your date of birth.';
+    if (clubTeam.isEmpty) return 'Please choose the club you support.';
+    if (nationalTeam.isEmpty) return 'Please choose the national team you support.';
+    if (password.length < 3) return 'Password must be at least 3 characters.';
+
+    final payload = {
+      'firstName': firstName.trim(),
+      'lastName': lastName.trim(),
+      'email': mail,
+      'phone': phone.trim(),
+      'dob': dob.toIso8601String(),
+      'clubTeam': clubTeam,
+      'nationalTeam': nationalTeam,
+      'password': password,
+    };
+    final res = await AuthApi.instance.register(payload, password);
+    if (res.user != null) {
+      _startSession(res.user!);
+      return null;
+    }
+    if (res.reachable) {
+      return res.error ?? 'Could not create your account.';
+    }
+    // Offline fallback — create the account locally on this device.
+    if (users.any((u) =>
+        u.email.toLowerCase() == mail.toLowerCase() ||
+        u.username.toLowerCase() == mail.toLowerCase())) {
+      return 'An account with that email already exists.';
+    }
+    _startSession(AppUser(
+      username: mail,
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      email: mail,
+      phone: phone.trim(),
+      dob: dob,
       password: password,
-    );
-    users.add(user);
+      clubTeam: clubTeam,
+      nationalTeam: nationalTeam,
+    ));
+    return null;
+  }
+
+  /// Sets the current user, caches them locally (so session restore + offline
+  /// login keep working), and persists the session.
+  void _startSession(AppUser user) {
+    final i = users.indexWhere(
+        (u) => u.username.toLowerCase() == user.username.toLowerCase());
+    if (i == -1) {
+      users.add(user);
+    } else {
+      users[i] = user;
+    }
     _persist(_kUsers, users);
     currentUser = user;
     _prefs.setString(_kSession, user.username);
     notifyListeners();
-    return null;
   }
+
+  bool _looksLikeEmail(String s) =>
+      RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(s);
 
   void logout() {
     currentUser = null;
@@ -159,12 +243,22 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void updateProfile({String? displayName, String? favouriteTeam, String? password}) {
+  void updateProfile({
+    String? firstName,
+    String? lastName,
+    String? phone,
+    String? clubTeam,
+    String? nationalTeam,
+    String? password,
+  }) {
     final me = currentUser;
     if (me == null) return;
     final updated = me.copyWith(
-      displayName: displayName,
-      favouriteTeam: favouriteTeam,
+      firstName: firstName,
+      lastName: lastName,
+      phone: phone,
+      clubTeam: clubTeam,
+      nationalTeam: nationalTeam,
       password: password,
     );
     final i = users.indexWhere((u) => u.username == me.username);

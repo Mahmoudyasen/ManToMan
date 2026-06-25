@@ -1,0 +1,3 @@
+python-tds>=1.15
+pyOpenSSL>=24.0
+certifi>=2024.0

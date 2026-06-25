@@ -12,7 +12,7 @@ drawer, rounded cards, and a floating bottom bar.
 
 | Tab | What it does |
 | --- | --- |
-| **Login / Sign up** | Gate before the app. Seeded demo accounts + new sign‑ups. |
+| **Login / Sign up** | Gate before the app. Unified login (email **or** username + password; admin rights come from the account's flag — no separate admin login). Sign‑up collects name, last name, email, phone, date of birth, and the **club** + **national team** you support, picked from lists with crests & flags. You can't register as an admin. |
 | **Community Q&A** | Admin opens/closes question rounds with a topic; members ask & upvote; admin marks questions "on the show". |
 | **Podcast** | Admin publishes episodes (title / description / audio URL); everyone listens with an inline play / pause / scrub player. |
 | **Suggestions** | Members suggest ideas and upvote; admin moves them Fresh → Planned → Done. |
@@ -28,7 +28,48 @@ drawer, rounded cards, and a floating bottom bar.
 | Admin (the host) | `mantoman` | `123` |
 | Community member | `mahmoud` | `123` |
 
-You can also create new community accounts from the Sign‑up tab.
+You can also create new community accounts from the Sign‑up tab (members log in
+with their email).
+
+## Database (Azure SQL) + backend API
+
+Auth is backed by the Azure SQL database `man-to-man`. Because Flutter has no
+working pure‑Dart SQL Server driver — and shipping the DB password inside the app
+would be insecure — the app talks to a tiny **backend API** that owns the DB
+credentials. The app calls it over HTTP; only the API touches SQL.
+
+```
+Flutter app ──HTTP──▶ backend/app.py ──TDS──▶ Azure SQL (users table)
+```
+
+**1. Create the table + admin** (once). The `users` schema and the seeded
+`mantoman` admin live in [`db/schema.sql`](db/schema.sql). Easiest is **Azure
+Portal → your SQL database → Query editor → paste → Run**.
+
+**2. Run the API.** Needs Python 3.
+
+```bash
+cd backend
+./run.sh                 # creates a venv, installs deps, starts on :8000
+# health check:
+curl http://localhost:8000/health      # -> {"ok": true}
+```
+
+**3. Run the app.** It auto‑targets the API:
+
+- macOS / Chrome / iOS simulator → `http://localhost:8000`
+- Android emulator → `http://10.0.2.2:8000` (handled automatically)
+- Real phone on Wi‑Fi → pass your machine's LAN IP:
+  `flutter run --dart-define=KICKOFF_API=http://192.168.1.x:8000`
+
+If the API is unreachable the app falls back to local `shared_preferences` so it
+still runs (with the seeded demo accounts), then syncs to the DB once the API is
+back. The server still needs **Public network access** enabled in Azure Portal →
+SQL server → Networking (+ a firewall rule for wherever the API runs).
+
+> **Security:** passwords are stored in plain text only to honour the `123` test
+> account. For production, hash them in the API and load the DB password from a
+> secret instead of the default baked into `backend/run.sh`.
 
 ## Getting started
 
