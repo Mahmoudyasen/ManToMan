@@ -5,9 +5,34 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'models.dart';
 import 'services/auth_api.dart';
 
+/// Result of an auth attempt. Exactly one state is true:
+/// [success] — logged in; [networkProblem] — couldn't reach the service (show
+/// the "check your connection" popup); otherwise [error] holds an inline
+/// message (wrong credentials, validation, etc.).
+class AuthOutcome {
+  final bool success;
+  final bool networkProblem;
+  final String? error;
+  const AuthOutcome.ok()
+      : success = true,
+        networkProblem = false,
+        error = null;
+  const AuthOutcome.network()
+      : success = false,
+        networkProblem = true,
+        error = null;
+  const AuthOutcome.failure(this.error)
+      : success = false,
+        networkProblem = false;
+}
+
 /// Central app state + persistence. A single instance ([store]) is shared
-/// through the widget tree via [ListenableBuilder]. Everything lives in
-/// shared_preferences so it survives restarts without a backend.
+/// through the widget tree via [ListenableBuilder].
+///
+/// Auth (login/sign-up) is fully online: it always goes through the backend
+/// API and the Azure SQL database — accounts are never cached or verified on
+/// the device, so a fresh online login is required each launch. The community
+/// content collections below are still cached in shared_preferences.
 class AppStore extends ChangeNotifier {
   AppStore._();
   static final AppStore instance = AppStore._();
@@ -17,7 +42,6 @@ class AppStore extends ChangeNotifier {
   bool get ready => _ready;
 
   // ── Collections ──────────────────────────────────────────────
-  final List<AppUser> users = [];
   final List<Question> questions = [];
   final List<Suggestion> suggestions = [];
   final List<Challenge> challenges = [];
@@ -30,14 +54,15 @@ class AppStore extends ChangeNotifier {
   bool get isAdmin => currentUser?.isAdmin ?? false;
 
   // ── Keys ─────────────────────────────────────────────────────
-  static const _kUsers = 'users';
   static const _kQuestions = 'questions';
   static const _kSuggestions = 'suggestions';
   static const _kChallenges = 'challenges';
   static const _kPodcasts = 'podcasts';
   static const _kQOpen = 'questionsOpen';
   static const _kQTopic = 'questionTopic';
-  static const _kSession = 'session';
+  // Stay-logged-in: only the account's database id is stored — never the
+  // password. On launch it's re-validated online via the backend.
+  static const _kSessionId = 'sessionId';
 
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
@@ -55,9 +80,6 @@ class AppStore extends ChangeNotifier {
   }
 
   void _load() {
-    users
-      ..clear()
-      ..addAll(_decodeList(_kUsers).map(AppUser.fromJson));
     questions
       ..clear()
       ..addAll(_decodeList(_kQuestions).map(Question.fromJson));
@@ -72,36 +94,11 @@ class AppStore extends ChangeNotifier {
       ..addAll(_decodeList(_kPodcasts).map(PodcastEpisode.fromJson));
     questionsOpen = _prefs.getBool(_kQOpen) ?? false;
     questionTopic = _prefs.getString(_kQTopic) ?? '';
-
-    final session = _prefs.getString(_kSession);
-    if (session != null) {
-      currentUser = users.where((u) => u.username == session).firstOrNull;
-    }
+    // The session is not restored here: a saved session holds only the user id
+    // and must be re-validated online (see [restoreSession]).
   }
 
   void _seedIfNeeded() {
-    if (users.isEmpty) {
-      users.addAll(const [
-        // The host. There is no admin sign-up — this seeded account (and the
-        // matching row in db/schema.sql) is the only way in as an admin.
-        AppUser(
-          username: 'mantoman',
-          firstName: 'Man to Man',
-          email: 'admin@mantoman.app',
-          password: '123',
-          isAdmin: true,
-        ),
-        AppUser(
-          username: 'mahmoud',
-          firstName: 'Mahmoud',
-          email: 'mahmoud@example.com',
-          password: '123',
-          clubTeam: 'Liverpool',
-          nationalTeam: 'Egypt',
-        ),
-      ]);
-      _persist(_kUsers, users);
-    }
     if (podcasts.isEmpty) {
       podcasts.add(PodcastEpisode(
         id: _id(),
@@ -123,41 +120,28 @@ class AppStore extends ChangeNotifier {
 
   String _id() => DateTime.now().microsecondsSinceEpoch.toString();
 
-  // ── Auth ─────────────────────────────────────────────────────
-  /// Unified login against the backend API (see `backend/app.py`).
+  // ── Auth (online-only) ───────────────────────────────────────
+  /// Unified login against the backend API + Azure SQL (see `backend/app.py`).
   /// [identifier] matches either the username (e.g. the admin's "mantoman") or
   /// a member's email; admin rights come from the stored `is_admin` flag — there
-  /// is no separate admin login. Returns null on success or an error message.
+  /// is no separate admin login.
   ///
-  /// If the backend is unreachable, falls back to locally-cached accounts (the
-  /// seeded demo accounts and anyone who registered on this device) so the app
-  /// still works offline.
-  Future<String?> login(String identifier, String password) async {
+  /// There is no offline fallback: if the service can't be reached the returned
+  /// outcome has [AuthOutcome.networkProblem] set so the UI can prompt the user
+  /// to check their connection.
+  Future<AuthOutcome> login(String identifier, String password,
+      {bool remember = true}) async {
     final res = await AuthApi.instance.login(identifier, password);
     if (res.user != null) {
-      _startSession(res.user!);
-      return null;
+      _startSession(res.user!, remember: remember);
+      return const AuthOutcome.ok();
     }
-    if (res.reachable) {
-      return res.error ?? 'Wrong email/username or password.';
-    }
-    // Offline fallback.
-    final id = identifier.trim().toLowerCase();
-    final local = users
-        .where((u) =>
-            (u.username.toLowerCase() == id || u.email.toLowerCase() == id) &&
-            u.password == password)
-        .firstOrNull;
-    if (local != null) {
-      _startSession(local);
-      return null;
-    }
-    return 'Wrong email/username or password.';
+    if (res.networkProblem) return const AuthOutcome.network();
+    return AuthOutcome.failure(res.error ?? 'Wrong email/username or password.');
   }
 
   /// Registers a community member via the backend. Never creates an admin.
-  /// Returns null on success, or a human-readable error message.
-  Future<String?> signUp({
+  Future<AuthOutcome> signUp({
     required String firstName,
     required String lastName,
     required String email,
@@ -166,19 +150,33 @@ class AppStore extends ChangeNotifier {
     required String clubTeam,
     required String nationalTeam,
     required String password,
+    bool remember = true,
   }) async {
     final mail = email.trim();
     // Validate up front so we fail fast with a friendly message (the backend
     // re-validates too).
     if (firstName.trim().isEmpty || lastName.trim().isEmpty) {
-      return 'Please enter your first and last name.';
+      return const AuthOutcome.failure('Please enter your first and last name.');
     }
-    if (!_looksLikeEmail(mail)) return 'Please enter a valid email address.';
-    if (phone.trim().isEmpty) return 'Please enter your phone number.';
-    if (dob == null) return 'Please pick your date of birth.';
-    if (clubTeam.isEmpty) return 'Please choose the club you support.';
-    if (nationalTeam.isEmpty) return 'Please choose the national team you support.';
-    if (password.length < 3) return 'Password must be at least 3 characters.';
+    if (!_looksLikeEmail(mail)) {
+      return const AuthOutcome.failure('Please enter a valid email address.');
+    }
+    if (phone.trim().isEmpty) {
+      return const AuthOutcome.failure('Please enter your phone number.');
+    }
+    if (dob == null) {
+      return const AuthOutcome.failure('Please pick your date of birth.');
+    }
+    if (clubTeam.isEmpty) {
+      return const AuthOutcome.failure('Please choose the club you support.');
+    }
+    if (nationalTeam.isEmpty) {
+      return const AuthOutcome.failure(
+          'Please choose the national team you support.');
+    }
+    if (password.length < 3) {
+      return const AuthOutcome.failure('Password must be at least 3 characters.');
+    }
 
     final payload = {
       'firstName': firstName.trim(),
@@ -192,45 +190,47 @@ class AppStore extends ChangeNotifier {
     };
     final res = await AuthApi.instance.register(payload, password);
     if (res.user != null) {
-      _startSession(res.user!);
-      return null;
+      _startSession(res.user!, remember: remember);
+      return const AuthOutcome.ok();
     }
-    if (res.reachable) {
-      return res.error ?? 'Could not create your account.';
-    }
-    // Offline fallback — create the account locally on this device.
-    if (users.any((u) =>
-        u.email.toLowerCase() == mail.toLowerCase() ||
-        u.username.toLowerCase() == mail.toLowerCase())) {
-      return 'An account with that email already exists.';
-    }
-    _startSession(AppUser(
-      username: mail,
-      firstName: firstName.trim(),
-      lastName: lastName.trim(),
-      email: mail,
-      phone: phone.trim(),
-      dob: dob,
-      password: password,
-      clubTeam: clubTeam,
-      nationalTeam: nationalTeam,
-    ));
-    return null;
+    if (res.networkProblem) return const AuthOutcome.network();
+    return AuthOutcome.failure(res.error ?? 'Could not create your account.');
   }
 
-  /// Sets the current user, caches them locally (so session restore + offline
-  /// login keep working), and persists the session.
-  void _startSession(AppUser user) {
-    final i = users.indexWhere(
-        (u) => u.username.toLowerCase() == user.username.toLowerCase());
-    if (i == -1) {
-      users.add(user);
-    } else {
-      users[i] = user;
+  /// True when a stay-logged-in session id is stored and should be restored
+  /// (online) on launch.
+  bool get hasSavedSession => _prefs.getInt(_kSessionId) != null;
+
+  /// Re-validates the saved session against the database. Returns
+  /// [AuthOutcome.ok] (and sets [currentUser]) when the account still exists,
+  /// [AuthOutcome.network] when the service can't be reached, or
+  /// [AuthOutcome.failure] when the session is stale (the saved id is cleared).
+  Future<AuthOutcome> restoreSession() async {
+    final id = _prefs.getInt(_kSessionId);
+    if (id == null) return const AuthOutcome.failure('No session.');
+    final res = await AuthApi.instance.me(id);
+    if (res.user != null) {
+      currentUser = res.user;
+      notifyListeners();
+      return const AuthOutcome.ok();
     }
-    _persist(_kUsers, users);
+    if (res.networkProblem) return const AuthOutcome.network();
+    // Account no longer exists — drop the stale session.
+    await _prefs.remove(_kSessionId);
+    return AuthOutcome.failure(res.error ?? 'Session expired.');
+  }
+
+  /// Sets the current user for this session. When [remember] is true the
+  /// account's database id is persisted (stay logged in across launches) —
+  /// never the password. When false, the login lives only in memory for this
+  /// run and any previously saved session is cleared.
+  void _startSession(AppUser user, {bool remember = true}) {
     currentUser = user;
-    _prefs.setString(_kSession, user.username);
+    if (remember && user.id != null) {
+      _prefs.setInt(_kSessionId, user.id!);
+    } else {
+      _prefs.remove(_kSessionId);
+    }
     notifyListeners();
   }
 
@@ -239,7 +239,7 @@ class AppStore extends ChangeNotifier {
 
   void logout() {
     currentUser = null;
-    _prefs.remove(_kSession);
+    _prefs.remove(_kSessionId);
     notifyListeners();
   }
 
@@ -253,7 +253,7 @@ class AppStore extends ChangeNotifier {
   }) {
     final me = currentUser;
     if (me == null) return;
-    final updated = me.copyWith(
+    currentUser = me.copyWith(
       firstName: firstName,
       lastName: lastName,
       phone: phone,
@@ -261,10 +261,6 @@ class AppStore extends ChangeNotifier {
       nationalTeam: nationalTeam,
       password: password,
     );
-    final i = users.indexWhere((u) => u.username == me.username);
-    if (i != -1) users[i] = updated;
-    currentUser = updated;
-    _persist(_kUsers, users);
     notifyListeners();
   }
 

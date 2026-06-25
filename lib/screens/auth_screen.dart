@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../data/teams.dart';
+import '../services/connectivity.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../widgets.dart';
@@ -24,6 +25,7 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _signup = false;
   bool _obscure = true;
   bool _busy = false;
+  bool _remember = true; // stay logged in across launches
   String? _error;
 
   // Login
@@ -57,7 +59,7 @@ class _AuthScreenState extends State<AuthScreen> {
       _error = null;
       _busy = true;
     });
-    final err = _signup
+    final outcome = _signup
         ? await store.signUp(
             firstName: _firstName.text,
             lastName: _lastName.text,
@@ -67,15 +69,80 @@ class _AuthScreenState extends State<AuthScreen> {
             clubTeam: _club ?? '',
             nationalTeam: _national ?? '',
             password: _password.text,
+            remember: _remember,
           )
-        : await store.login(_identifier.text, _password.text);
+        : await store.login(_identifier.text, _password.text,
+            remember: _remember);
     // On success the store flips currentUser and this screen is replaced, so
     // only touch state if we're still mounted and stayed on this screen.
     if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _error = err;
-    });
+    setState(() => _busy = false);
+    if (outcome.networkProblem) {
+      // Offline / VPN / service down — auth is online-only, so prompt the user
+      // to fix their connection rather than showing a login error.
+      setState(() => _error = null);
+      final reason = await diagnoseConnection();
+      if (!mounted) return;
+      _showConnectionDialog(reason);
+      return;
+    }
+    setState(() => _error = outcome.error);
+  }
+
+  void _showConnectionDialog(ConnReason reason) {
+    final (icon, title, body) = switch (reason) {
+      ConnReason.vpn => (
+          Icons.vpn_lock_rounded,
+          "Can't reach Kickoff",
+          "You're on a VPN. Kickoff works better without one — if you're having "
+              'trouble, try turning it off. You can also keep it on and try again.',
+        ),
+      ConnReason.offline => (
+          Icons.wifi_off_rounded,
+          'No connection',
+          'You appear to be offline. Check your internet connection and try '
+              'again.',
+        ),
+      ConnReason.generic => (
+          Icons.cloud_off_rounded,
+          "Can't reach Kickoff",
+          "We couldn't reach the server. Please check your connection and try "
+              'again.',
+        ),
+    };
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Row(
+          children: [
+            Icon(icon, color: C.live, size: 24),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(title,
+                  style: const TextStyle(
+                      color: C.ink, fontSize: 18, fontWeight: FontWeight.w800)),
+            ),
+          ],
+        ),
+        content: Text(
+          body,
+          style: const TextStyle(
+              color: C.muted, fontSize: 14.5, fontWeight: FontWeight.w500),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK',
+                style: TextStyle(
+                    color: C.violetMid,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -176,7 +243,9 @@ class _AuthScreenState extends State<AuthScreen> {
               ],
             ),
           ],
-          const SizedBox(height: 22),
+          const SizedBox(height: 18),
+          _rememberMe(),
+          const SizedBox(height: 18),
           PillButton(
             label: _busy
                 ? 'Please wait…'
@@ -188,6 +257,39 @@ class _AuthScreenState extends State<AuthScreen> {
                     : Icons.login_rounded),
             onTap: _busy ? null : _submit,
           ),
+        ],
+      ),
+    );
+  }
+
+  /// "Keep me logged in" toggle. When off, the session is not persisted and the
+  /// user must log in again next launch.
+  Widget _rememberMe() {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => setState(() => _remember = !_remember),
+      child: Row(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            width: 22,
+            height: 22,
+            decoration: BoxDecoration(
+              color: _remember ? C.violetMid : Colors.transparent,
+              borderRadius: BorderRadius.circular(7),
+              border: Border.all(
+                color: _remember ? C.violetMid : C.muted,
+                width: 1.6,
+              ),
+            ),
+            child: _remember
+                ? const Icon(Icons.check_rounded, color: Colors.white, size: 16)
+                : null,
+          ),
+          const SizedBox(width: 10),
+          const Text('Keep me logged in',
+              style: TextStyle(
+                  color: C.ink, fontSize: 14, fontWeight: FontWeight.w600)),
         ],
       ),
     );

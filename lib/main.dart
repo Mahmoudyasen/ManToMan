@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'screens/auth_screen.dart';
+import 'screens/connection_screen.dart';
 import 'screens/challenges_screen.dart';
 import 'screens/fixtures_screen.dart';
 import 'screens/news_screen.dart';
@@ -9,6 +10,7 @@ import 'screens/podcast_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/questions_screen.dart';
 import 'screens/suggestions_screen.dart';
+import 'services/connectivity.dart';
 import 'store.dart';
 import 'theme.dart';
 
@@ -38,15 +40,95 @@ class KickoffApp extends StatelessWidget {
       home: ListenableBuilder(
         listenable: store,
         builder: (context, _) {
-          if (!store.ready) {
-            return const Scaffold(
-              body: Center(child: CircularProgressIndicator(color: Colors.white)),
-            );
-          }
-          return store.currentUser == null ? const AuthScreen() : const RootShell();
+          if (!store.ready) return const _Splash();
+          if (store.currentUser != null) return const RootShell();
+          // Logged out / not yet logged in: the gate restores a saved session
+          // online, shows a connection screen if the service is unreachable,
+          // or falls through to the login screen.
+          return const _LaunchGate();
         },
       ),
     );
+  }
+}
+
+/// Loading splash shown while the store initialises and while a saved session
+/// is being re-validated against the backend.
+class _Splash extends StatelessWidget {
+  const _Splash();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(child: CircularProgressIndicator(color: Colors.white)),
+    );
+  }
+}
+
+/// Decides the entry screen when no user is logged in. If a stay-logged-in
+/// session is saved it is re-validated online; offline/VPN problems surface a
+/// [ConnectionScreen] with a retry, otherwise the [AuthScreen] is shown.
+class _LaunchGate extends StatefulWidget {
+  const _LaunchGate();
+
+  @override
+  State<_LaunchGate> createState() => _LaunchGateState();
+}
+
+class _LaunchGateState extends State<_LaunchGate> {
+  bool _checking = false;
+  ConnReason? _problem;
+
+  @override
+  void initState() {
+    super.initState();
+    if (store.hasSavedSession) {
+      _checking = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _restore());
+    }
+  }
+
+  Future<void> _restore() async {
+    setState(() {
+      _checking = true;
+      _problem = null;
+    });
+    final outcome = await store.restoreSession();
+    if (!mounted) return;
+    // On success the store flips currentUser and this gate is replaced by
+    // RootShell, so there's nothing to do here.
+    if (outcome.success) return;
+    if (outcome.networkProblem) {
+      final reason = await diagnoseConnection();
+      if (!mounted) return;
+      setState(() {
+        _checking = false;
+        _problem = reason;
+      });
+      return;
+    }
+    // Session was stale (account gone) — show the login screen.
+    setState(() {
+      _checking = false;
+      _problem = null;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_checking) return const _Splash();
+    if (_problem != null) {
+      return ConnectionScreen(
+        reason: _problem!,
+        onRetry: _restore,
+        secondaryLabel: 'Log in with a different account',
+        onSecondary: () {
+          store.logout(); // clears the saved session id
+          setState(() => _problem = null);
+        },
+      );
+    }
+    return const AuthScreen();
   }
 }
 

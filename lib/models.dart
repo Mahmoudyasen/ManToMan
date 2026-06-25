@@ -4,6 +4,10 @@
 // ─────────────────────────────────────────────────────────────────
 
 class AppUser {
+  /// Database primary key. Null for accounts not yet round-tripped through the
+  /// backend; used to re-validate a saved session online (see `/auth/me`).
+  final int? id;
+
   /// Login handle. Admin uses a real username ("mantoman"); community members
   /// are registered with their email as the username.
   final String username;
@@ -18,13 +22,14 @@ class AppUser {
   final String nationalTeam; // supported national team
 
   const AppUser({
+    this.id,
     required this.username,
     this.firstName = '',
     this.lastName = '',
     this.email = '',
     this.phone = '',
     this.dob,
-    required this.password,
+    this.password = '',
     this.isAdmin = false,
     this.clubTeam = '',
     this.nationalTeam = '',
@@ -47,6 +52,7 @@ class AppUser {
     String? nationalTeam,
   }) =>
       AppUser(
+        id: id,
         username: username,
         firstName: firstName ?? this.firstName,
         lastName: lastName ?? this.lastName,
@@ -60,6 +66,7 @@ class AppUser {
       );
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'username': username,
         'firstName': firstName,
         'lastName': lastName,
@@ -73,13 +80,14 @@ class AppUser {
       };
 
   factory AppUser.fromJson(Map<String, dynamic> j) => AppUser(
+        id: (j['id'] as num?)?.toInt(),
         username: j['username'] as String,
         firstName: j['firstName'] as String? ?? '',
         lastName: j['lastName'] as String? ?? '',
         email: j['email'] as String? ?? '',
         phone: j['phone'] as String? ?? '',
         dob: (j['dob'] as String?) != null ? DateTime.tryParse(j['dob'] as String) : null,
-        password: j['password'] as String,
+        password: j['password'] as String? ?? '',
         isAdmin: j['isAdmin'] as bool? ?? false,
         clubTeam: j['clubTeam'] as String? ?? '',
         nationalTeam: j['nationalTeam'] as String? ?? '',

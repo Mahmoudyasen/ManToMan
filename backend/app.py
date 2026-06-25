@@ -8,6 +8,7 @@ small service over HTTP, and only this service holds the DB credentials.
 
 Endpoints
   GET  /health              -> {"ok": true}
+  GET  /auth/me?id=<id>     -> {user}   (re-validate a stay-logged-in session)
   POST /auth/login          {identifier, password}
   POST /auth/register       {firstName,lastName,email,phone,dob,clubTeam,nationalTeam,password}
 
@@ -24,6 +25,7 @@ import json
 import os
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 import certifi
 import pytds
@@ -111,9 +113,32 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True})
 
     def do_GET(self):
-        if self.path == "/health":
+        parsed = urlparse(self.path)
+        if parsed.path == "/health":
             return self._send(200, {"ok": True})
+        if parsed.path == "/auth/me":
+            ids = parse_qs(parsed.query).get("id", [])
+            return self.me(ids[0] if ids else "")
         self._send(404, {"error": "not found"})
+
+    def me(self, raw_id):
+        try:
+            uid = int(raw_id)
+        except (TypeError, ValueError):
+            return self._send(400, {"error": "Missing or invalid id."})
+        try:
+            with connect() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    f"SELECT {SELECT_COLS} FROM dbo.users WHERE id = %s", (uid,)
+                )
+                row = cur.fetchone()
+        except Exception as e:  # noqa: BLE001
+            return self._send(503, {"error": f"Database unavailable: {e}"})
+        if not row:
+            # Account no longer exists — the saved session is stale.
+            return self._send(404, {"error": "Session no longer valid."})
+        self._send(200, {"user": row_to_user(row)})
 
     def _body(self):
         length = int(self.headers.get("Content-Length", 0))
