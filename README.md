@@ -116,3 +116,7 @@ lib/
 
 Built with [Flutter](https://flutter.dev). Fixtures courtesy of ESPN's public
 endpoints; news courtesy of the respective publishers' RSS feeds.
+
+## License
+
+[MIT](LICENSE)
